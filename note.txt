@@ -1,0 +1,9 @@
+use Playwright or Selenium for interact
+
+bs
+prefect match
+soup.find('div', class_='PlayerGameRoundListItem selected')
+
+partial matches
+soup.select_one("div.PlayerGameRoundListItem.selected")
+soup.find("div", class_=["PlayerGameRoundListItem", "selected"])

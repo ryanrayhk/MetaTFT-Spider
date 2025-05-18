@@ -11,6 +11,7 @@ import pyperclip
 from pprint import pprint
 import array_help
 
+# python '.\metatft_getdata.py' --no-file
 class TFTTimeline:
     def __init__(self):
         self.base_url = "https://www.metatft.com/player"
@@ -294,10 +295,97 @@ class TFTTimeline:
         match_data['players_summary'] = self.players_tab_summary(soup)
         match_data['avg_opponent_rank'] = self.players_tab_avg_rank(soup)
         match_data['players'] = self.players_tab_players(soup)
+        return match_data
+    
+    async def round_detail_tab_content2(self, soup, match_data):
+        list = soup.find('div', class_='PlayerGameRoundList')
+        #PlayerGameRoundListItem victory selected
+        if list:
+            match_data['round_detail'] = []
+            rounds = list.find_all('div', class_='PlayerGameRoundListItem')
+            for round in rounds:
+                # tap on the round to get details
+                print(f"round is none: {round == None}")
+                try:
+                    await round.click()
+                    print(f"soup is none: {soup == None}")
+                    #PlayerGameRoundDetail
+                    await soup.wait_for_timeout(500)
+                except Exception as e:
+                    print(f"Error clicking on round: {str(e)}")
+                round_data = {}
+                round_data['result'] = 'victory' if round.get('class') == 'PlayerGameRoundListItem victory selected' else 'defeat'
+                round_data['round'] = self.check_get_text(round.find('div', class_='StageDetails'))
+                round_data['opponent'] = self.check_get_text(round.find('span', class_='OpponentName'))
+                team_map = soup.find('div', class_='team-builder')
+                round_data['team_map'] = self.round_detail_team_map(team_map)
+                match_data['round_detail'].append(round_data)
+                print(f"round_data: {round_data}")
         
         return match_data
-        
-    async def process_tab_content(self, tab_name, content, match_data):
+    
+    async def round_detail_tab_content(self, page, soup, match_data):
+        list = soup.find('div', class_='PlayerGameRoundList')
+        #PlayerGameRoundListItem victory selected
+        if list:
+            match_data['round_detail'] = []
+            # rounds = list.find_all('div', class_='PlayerGameRoundListItem')
+            rounds = await page.query_selector_all('div.tab-content > div.tab-pane.active > div > div > div.PlayerGameRoundList > div.PlayerGameRoundListItem')
+            if len(rounds) == 0:
+                rounds = await page.query_selector_all('.PlayerGameRoundList .PlayerGameRoundListItem')
+            for round_e in rounds:
+                # tap on the round to get details
+                print(f"Type of round: {type(round_e)}")
+                print(f"Has click method: {hasattr(round_e, 'click')}")
+                print(f"round is none: {round_e == None}")
+                try:
+                    await round_e.click()
+                    await page.wait_for_timeout(500)
+                    active_tab = await page.query_selector('.tab-content .tab-pane.active')
+                    if not active_tab:
+                        active_tab = await page.query_selector('.PlayerGameDropdown')
+                    
+                    if active_tab:
+                        content = await active_tab.inner_html()
+                    soup2 = BeautifulSoup(content, 'html.parser')
+                    print(f"round_e.inner_html(): {round_e.inner_html()}")
+                    this_round = soup2.select_one("div.PlayerGameRoundListItem.selected")
+                    round_data = {}
+                    round_data['result'] = 'victory' if this_round.get('class') == 'PlayerGameRoundListItem victory selected' else 'defeat'
+                    round_data['round'] = self.check_get_text(this_round.find('div', class_='StageDetails'))
+                    round_data['opponent'] = self.check_get_text(this_round.find('span', class_='OpponentName'))
+                    team_map = soup2.find('div', class_='team-builder')
+                    round_data['team_map'] = self.round_detail_team_map(team_map)
+                    match_data['round_detail'].append(round_data)
+                    print(f"round_data: {round_data}")
+                except Exception as e:
+                    print(f"Error clicking on round: {str(e)}")
+        return match_data
+    
+    def round_detail_team_map(self, soup):
+        data = []
+
+        # 查找所有 <g> 元素
+        for g in soup.find_all("g"):
+            defs = g.find("defs")
+            polygon = g.find("polygon")
+
+            if defs and polygon:
+                pattern = defs.find("pattern", id=lambda x: x and x.startswith("mask-T"))
+                if pattern:
+                    mask_id = pattern["id"]
+                    hex_id = polygon.get("id", "")
+
+                    # 提取 name 和 cell_id
+                    parts = mask_id.split("_")
+                    if len(parts) >= 3:
+                        name = parts[1].split("-")[0]  # 提取 name
+                        cell_id = hex_id.split("_")[1] if "_" in hex_id else ""
+
+                        data.append({"name": name, "cell_id": cell_id})
+        return data
+
+    async def process_tab_content(self, tab_name, page, content, match_data):
         soup = BeautifulSoup(content, 'html.parser')
         if tab_name.lower() == 'players':
             match_data = self.players_tab_content(soup, match_data)
@@ -546,6 +634,8 @@ class TFTTimeline:
                 match_data['timeline'] = timeline_data
             else:
                 print("No timeline table found")
+        elif tab_name.lower() == 'round detail':
+            await self.round_detail_tab_content(page, soup, match_data)
         
         return match_data
 
@@ -588,7 +678,7 @@ class TFTTimeline:
                     
                     if active_tab:
                         content = await active_tab.inner_html()
-                        match_data = await self.process_tab_content(tab_name, content, match_data)
+                        match_data = await self.process_tab_content(tab_name, page, content, match_data)
                 
                 except Exception as e:
                     print(f"Error processing tab {tab_name}: {str(e)}")
@@ -948,6 +1038,25 @@ class TFTTimeline:
             else:
                 print("No timeline data found")
         return clipboard_text
+    
+    def display_round_detail(self, recent_match, clipboard_text):
+        if 'round_detail' in recent_match:
+            print("\nROUND DETAIL:")
+            round_detail_data = recent_match['round_detail']
+            
+            for round_data in round_detail_data:
+                print(f"\nRound: {round_data['round']}")
+                print(f"Result: {round_data['result']}")
+                print(f"Opponent: {round_data['opponent']}")
+                print(f"Team Map: {round_data['team_map']}")
+
+                clipboard_text.extend([
+                    f"\nRound: {round_data['round']}",
+                    f"Result: {round_data['result']}",
+                    f"Opponent: {round_data['opponent']}",
+                    f"Team Map: {round_data['team_map']}"
+                ])
+        return clipboard_text
 
     def display_match_history(self, matches, write_file=True):
         if not matches:
@@ -989,6 +1098,9 @@ class TFTTimeline:
         
         # Display timeline data
         clipboard_text = self.display_timeline(recent_match, clipboard_text)
+
+        # Display timeline data
+        clipboard_text = self.display_round_detail(recent_match, clipboard_text)
         
         # Copy to clipboard
         pyperclip.copy('\n'.join(clipboard_text))
