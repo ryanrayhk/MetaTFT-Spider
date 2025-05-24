@@ -10,9 +10,10 @@ from dotenv import load_dotenv
 import pyperclip
 from pprint import pprint
 import array_help
+import re
 
 # python '.\metatft_getdata.py' --no-file
-class TFTTimeline:
+class MetaTFT:
     def __init__(self):
         self.base_url = "https://www.metatft.com/player"
 
@@ -141,22 +142,19 @@ class TFTTimeline:
             return player_data
 
     def extract_traits(self, player_match):
-        """Extract traits for a player"""
         traits = []
         trait_containers = player_match.find_all('div', class_='TraitCompactContainer')
         for trait in trait_containers:
-            # Get trait name from mask-image URL
             icon_container = trait.find('div', class_='TraitCompactIconContainer')
-            if icon_container:
-                style = icon_container.get('style', '')
-                if 'mask-image' in style:
-                    # Extract trait name from URL
-                    trait_name = style.split('traits/')[1].split('.png')[0]
-                    trait_data = {
-                        'name': trait_name,
-                        'count': trait.get_text(strip=True)
-                    }
-                    traits.append(trait_data)
+            style = icon_container.get('style', '') if icon_container else {}
+            if not style.get('mask-image'):
+                continue
+            trait_name = style.split('traits/')[1].split('.png')[0]
+            trait_data = {
+                'name': trait_name,
+                'count': trait.get_text(strip=True)
+            }
+            traits.append(trait_data)
         return traits
 
     def extract_units(self, player_match):
@@ -195,22 +193,9 @@ class TFTTimeline:
         except Exception:
             pass
         return items
-    
-    def players_tab_summary(self, soup):
-        try:
-            summary_div = soup.find('div', class_='GameSummary')
-            if not summary_div:
-                return []
-            summary_data = []
-            summary_tags = summary_div.find_all('div', class_='PlayerTag')
-            for tag in summary_tags:
-                # found a case with only one class
-                tag_type = 'none' if len(tag.get('class', []))==1 else tag.get('class', [])[1].replace('PlayerTag', '')
-                summary_data.append(f"{tag.get_text(strip=True)}:{tag_type}")
-            return summary_data
-        except Exception as e:
-            print(f"Error get summary: {str(e)}")
-            return []
+        
+    def tabs_content(self, tags):
+        return map(lambda tag: f"{tag.get_text(strip=True)}:{tag.get('class', [])[1].replace('PlayerTag', '')}" if len(tag.get('class', []))==2 else f"{tag.get_text(strip=True)}:none", tags)
 
     def players_tab_avg_rank(self, soup):
         rank_summary = soup.find('div', class_='GameRankSummary')
@@ -274,7 +259,6 @@ class TFTTimeline:
                         player_data['board_value'] = stat_text.get_text(strip=True).replace('Board Value', '').strip()
         try:
             
-            # Get traits
             try:
                 player_data['traits'] = self.extract_traits(player)
             except Exception:
@@ -292,155 +276,179 @@ class TFTTimeline:
             return player_data
             
     def players_tab_content(self, soup, match_data):
-        match_data['players_summary'] = self.players_tab_summary(soup)
+        summary_div = soup.find('div', class_='GameSummary')
+        match_data['players_summary'] = self.tabs_content(summary_div.find_all('div', class_='PlayerTag')) if summary_div else []
         match_data['avg_opponent_rank'] = self.players_tab_avg_rank(soup)
         match_data['players'] = self.players_tab_players(soup)
         return match_data
     
-    async def round_detail_tab_content2(self, soup, match_data):
-        list = soup.find('div', class_='PlayerGameRoundList')
-        #PlayerGameRoundListItem victory selected
-        if list:
-            match_data['round_detail'] = []
-            rounds = list.find_all('div', class_='PlayerGameRoundListItem')
-            for round in rounds:
-                # tap on the round to get details
-                print(f"round is none: {round == None}")
-                try:
-                    await round.click()
-                    print(f"soup is none: {soup == None}")
-                    #PlayerGameRoundDetail
-                    await soup.wait_for_timeout(500)
-                except Exception as e:
-                    print(f"Error clicking on round: {str(e)}")
+    async def round_detail_tab_content(self, page, match_data):
+        match_data['round_detail'] = []
+        rounds = await page.query_selector_all('div.tab-content > div.tab-pane.active > div > div > div.PlayerGameRoundList > div.PlayerGameRoundListItem')
+        if len(rounds) == 0:
+            rounds = await page.query_selector_all('.PlayerGameRoundList .PlayerGameRoundListItem')
+
+        # Don't use round as a name
+        for round_item in rounds:
+            # tap on the round to get details
+            try:
+                await round_item.click()
+                await page.wait_for_timeout(500)
+                active_tab = await page.query_selector('.tab-content .tab-pane.active')
+                if not active_tab:
+                    active_tab = await page.query_selector('.PlayerGameDropdown')
+                
+                if active_tab:
+                    content = await active_tab.inner_html()
+                soup = BeautifulSoup(content, 'html.parser')
+                this_round = soup.select_one("div.PlayerGameRoundListItem.selected")
                 round_data = {}
-                round_data['result'] = 'victory' if round.get('class') == 'PlayerGameRoundListItem victory selected' else 'defeat'
-                round_data['round'] = self.check_get_text(round.find('div', class_='StageDetails'))
-                round_data['opponent'] = self.check_get_text(round.find('span', class_='OpponentName'))
+                round_data['result'] = 'victory' if this_round.get('class') == 'PlayerGameRoundListItem victory selected' else 'defeat'
+                round_data['round'] = self.check_get_text(this_round.find('div', class_='StageDetails'))
+                round_data['opponent'] = self.check_get_text(this_round.find('span', class_='OpponentName'))
                 team_map = soup.find('div', class_='team-builder')
                 round_data['team_map'] = self.round_detail_team_map(team_map)
                 match_data['round_detail'].append(round_data)
                 print(f"round_data: {round_data}")
-        
+            except Exception as e:
+                print(f"Error clicking on round: {str(e)}")
         return match_data
     
-    async def round_detail_tab_content(self, page, soup, match_data):
-        list = soup.find('div', class_='PlayerGameRoundList')
-        #PlayerGameRoundListItem victory selected
-        if list:
-            match_data['round_detail'] = []
-            # rounds = list.find_all('div', class_='PlayerGameRoundListItem')
-            rounds = await page.query_selector_all('div.tab-content > div.tab-pane.active > div > div > div.PlayerGameRoundList > div.PlayerGameRoundListItem')
-            if len(rounds) == 0:
-                rounds = await page.query_selector_all('.PlayerGameRoundList .PlayerGameRoundListItem')
-            for round_e in rounds:
-                # tap on the round to get details
-                print(f"Type of round: {type(round_e)}")
-                print(f"Has click method: {hasattr(round_e, 'click')}")
-                print(f"round is none: {round_e == None}")
-                try:
-                    await round_e.click()
-                    await page.wait_for_timeout(500)
-                    active_tab = await page.query_selector('.tab-content .tab-pane.active')
-                    if not active_tab:
-                        active_tab = await page.query_selector('.PlayerGameDropdown')
-                    
-                    if active_tab:
-                        content = await active_tab.inner_html()
-                    soup2 = BeautifulSoup(content, 'html.parser')
-                    print(f"round_e.inner_html(): {round_e.inner_html()}")
-                    this_round = soup2.select_one("div.PlayerGameRoundListItem.selected")
-                    round_data = {}
-                    round_data['result'] = 'victory' if this_round.get('class') == 'PlayerGameRoundListItem victory selected' else 'defeat'
-                    round_data['round'] = self.check_get_text(this_round.find('div', class_='StageDetails'))
-                    round_data['opponent'] = self.check_get_text(this_round.find('span', class_='OpponentName'))
-                    team_map = soup2.find('div', class_='team-builder')
-                    round_data['team_map'] = self.round_detail_team_map(team_map)
-                    match_data['round_detail'].append(round_data)
-                    print(f"round_data: {round_data}")
-                except Exception as e:
-                    print(f"Error clicking on round: {str(e)}")
-        return match_data
-    
+    # TODO: not finished, it is a draft only
     def round_detail_team_map(self, soup):
         data = []
-
-        # 查找所有 <g> 元素
         for g in soup.find_all("g"):
             defs = g.find("defs")
             polygon = g.find("polygon")
+            pattern = defs.find("pattern", id=lambda x: x and x.startswith("mask-T")) if defs and polygon else None
+            mask_id = pattern["id"] if pattern else ""
 
-            if defs and polygon:
-                pattern = defs.find("pattern", id=lambda x: x and x.startswith("mask-T"))
-                if pattern:
-                    mask_id = pattern["id"]
-                    hex_id = polygon.get("id", "")
+            parts = mask_id.split("_")
+            if len(parts) >= 3:
+                name = parts[1].split("-")[0]
+                hex_id = polygon.get("id", "") if polygon else ""
+                cell_id = hex_id.split("_")[1] if "_" in hex_id else ""
 
-                    # 提取 name 和 cell_id
-                    parts = mask_id.split("_")
-                    if len(parts) >= 3:
-                        name = parts[1].split("-")[0]  # 提取 name
-                        cell_id = hex_id.split("_")[1] if "_" in hex_id else ""
-
-                        data.append({"name": name, "cell_id": cell_id})
+                data.append({"name": name, "cell_id": cell_id})
         return data
+    
+    def personal_summary_graph(self, soup, match_data, title):
+        stages = []
+        x_axis = soup.find('g', class_='x-axis')
+        x_ticks = x_axis.find_all('g', class_='tick') if x_axis else []
+        for tick in x_ticks:
+            text = tick.find('text')
+            if text:
+                stages.append(text.get_text(strip=True))
 
-    async def process_tab_content(self, tab_name, page, content, match_data):
+        positions = []
+        y_axis = soup.find('g', class_='y-axis')
+        y_ticks = y_axis.find_all('g', class_='tick') if y_axis else []
+        for tick in y_ticks:
+            text = tick.find('text')
+            if text:
+                positions.append(text.get_text(strip=True))
+
+        paths = []
+        path_elements = soup.find_all('path', class_='spark_line')
+        for path in path_elements:
+            path_data = path.get('d', '')
+            if not path_data:
+                continue
+            paths.append(path_data)
+
+        labels = []
+        label_elements = soup.find_all('text', class_='label')
+        for label in label_elements:
+            labels.append({'point':f"{label.get("x","")},{label.get("y","")}", 'name':{label.get_text(strip=True)}})
+
+        match_data[f"personal_summary_graph_{title}"] = {
+            'stages': stages,
+            'positions': positions,
+            'paths': paths,
+            'labels': labels
+        }
+        print(f"personal_summary_graph_{title}: {match_data[f'personal_summary_graph_{title}']}")
+        return match_data
+
+    async def process_tab_content(self, tab_name, page, active_tab, content, match_data):
         soup = BeautifulSoup(content, 'html.parser')
         if tab_name.lower() == 'players':
             match_data = self.players_tab_content(soup, match_data)
         elif tab_name.lower() == 'personal summary':
-            # Extract summary data from Personal Summary tab
+            #region Extract player summary data
             summary_div = soup.find('div', class_='GameSummary')
-            if summary_div:
-                summary_data = {
-                    'positive': [],
-                    'negative': [],
-                    'ap': []
-                }
-                
-                # Find all summary tags
-                summary_tags = summary_div.find_all('div', class_='PlayerTag')
-                for tag in summary_tags:
-                    tag_text = tag.get_text(strip=True)
-                    if 'PlayerTagpositive' in tag.get('class', []):
-                        summary_data['positive'].append(tag_text)
-                    elif 'PlayerTagnegative' in tag.get('class', []):
-                        summary_data['negative'].append(tag_text)
-                    elif 'PlayerTagAP' in tag.get('class', []):
-                        summary_data['ap'].append(tag_text)
-                
-                match_data['personal_summary'] = summary_data
-            
-            # Extract stage breakdown data
+            match_data['personal_summary'] = self.tabs_content(summary_div.find_all('div', class_='PlayerTag')) if summary_div else []
+
+            # Graph
+            PlayerProfilePageServerDropdownContainer = await active_tab.query_selector('.PlayerProfilePageServerDropdownContainer')
+            await PlayerProfilePageServerDropdownContainer.click()
+            await page.wait_for_timeout(500)
+            MuiListRoot = await page.query_selector('.MuiList-root')
+            MuiListItems = await MuiListRoot.query_selector_all('.MuiMenuItem-root')
+            handledItems = []
+            newMuiListItems = MuiListItems
+            for i, item in enumerate(MuiListItems):
+                for x in newMuiListItems:
+                    text2 = await x.inner_text()
+                    print(f"newMuiListItems: {text2}")
+                    print(f"handledItems: {handledItems}")
+                    if text2 not in handledItems:
+                        clickItem = x
+                        break
+                await clickItem.click()
+                await page.wait_for_timeout(500)
+
+                # get data
+                # g x-axis
+                #     g tick
+                #         text
+                #             stage
+                GameSummaryChart = await page.query_selector('.GameSummaryChart')
+                content = await GameSummaryChart.inner_html()
+                match_data = self.personal_summary_graph(
+                    BeautifulSoup(content, 'html.parser'), 
+                    match_data,
+                    text2)
+                handledItems.append(text2)
+                if len(handledItems) == len(MuiListItems):
+                    break
+
+                PlayerProfilePageServerDropdownContainer = await active_tab.query_selector('.PlayerProfilePageServerDropdownContainer')
+                await PlayerProfilePageServerDropdownContainer.click()
+                await page.wait_for_timeout(500)
+                nenwMuiListRoot = await page.query_selector('.MuiList-root')
+                newMuiListItems = await nenwMuiListRoot.query_selector_all('.MuiMenuItem-root')
+
+            #region Extract stage breakdown data
             stage_breakdown = soup.find('div', class_='PlayerGameSummaryHighlightStage')
-            if stage_breakdown:
-                stage_data = []
-                stages = stage_breakdown.find_all('div', class_='PlayerGameSummaryStage')
-                
-                for stage in stages:
-                    stage_info = {}
-                    
-                    # Get stage name and win rate
-                    win_rate_div = stage.find('div', class_='PlayerGameSummaryStageWinRate')
-                    if win_rate_div:
-                        stage_info['name'] = win_rate_div.find('div', class_='PlayerGameSummaryStageText').get_text(strip=True)
-                        stage_info['win_rate'] = win_rate_div.find('div', class_='PlayerGameSummaryStageWinRateNumber').get_text(strip=True)
-                    
-                    # Get MVP unit
-                    mvp_div = stage.find('div', class_='UnitMVP')
-                    if mvp_div:
-                        stage_info['mvp'] = {
-                            'name': mvp_div.find('div', class_='UnitMVPName').get_text(strip=True),
-                            'avg_damage': stage.find('div', class_='UnitMVPStat').find('div', class_='UnitMVPStatNumber').get_text(strip=True),
-                            'max_damage': stage.find_all('div', class_='UnitMVPStat')[1].find('div', class_='UnitMVPStatNumber').get_text(strip=True),
-                            'win_rate': stage.find_all('div', class_='UnitMVPStat')[2].find('div', class_='PlayerGameSummaryStageWinRateNumber').get_text(strip=True)
-                        }
-                    
-                    stage_data.append(stage_info)
-                
-                match_data['stage_breakdown'] = stage_data
+            stage_data = []
+            stages = stage_breakdown.find_all('div', class_='PlayerGameSummaryStage') if stage_breakdown else []
             
+            for stage in stages:
+                stage_info = {}
+                
+                # Get stage name and win rate
+                win_rate_div = stage.find('div', class_='PlayerGameSummaryStageWinRate')
+                if win_rate_div:
+                    stage_info['name'] = win_rate_div.find('div', class_='PlayerGameSummaryStageText').get_text(strip=True)
+                    stage_info['win_rate'] = win_rate_div.find('div', class_='PlayerGameSummaryStageWinRateNumber').get_text(strip=True)
+                
+                # Get MVP unit
+                mvp_div = stage.find('div', class_='UnitMVP')
+                if mvp_div:
+                    stage_info['mvp'] = {
+                        'name': mvp_div.find('div', class_='UnitMVPName').get_text(strip=True),
+                        'avg_damage': stage.find('div', class_='UnitMVPStat').find('div', class_='UnitMVPStatNumber').get_text(strip=True),
+                        'max_damage': stage.find_all('div', class_='UnitMVPStat')[1].find('div', class_='UnitMVPStatNumber').get_text(strip=True),
+                        'win_rate': stage.find_all('div', class_='UnitMVPStat')[2].find('div', class_='PlayerGameSummaryStageWinRateNumber').get_text(strip=True)
+                    }
+                
+                stage_data.append(stage_info)
+            
+            match_data['stage_breakdown'] = stage_data
+            #endregion
+
             # Extract economy data
             economy_div = soup.find('div', class_='PlayerGameSummaryEconomy')
             if economy_div:
@@ -549,6 +557,7 @@ class TFTTimeline:
                     key_rounds_data.append(round_data)
                 
                 match_data['key_rounds'] = key_rounds_data
+                #endregion
         elif tab_name.lower() == 'timeline':
             # Process timeline data
             timeline_data = {}
@@ -635,22 +644,17 @@ class TFTTimeline:
             else:
                 print("No timeline table found")
         elif tab_name.lower() == 'round detail':
-            await self.round_detail_tab_content(page, soup, match_data)
+            await self.round_detail_tab_content(page, match_data)
         
         return match_data
 
     async def get_match_details(self, page, match_id):
-        """Get detailed data from all tabs of a match"""
         try:
             expand_button = await page.query_selector(f'#{match_id} .PlayerGameExpandImageContainer')
-            if not expand_button:
-                print(f"Could not find expand button for match {match_id}")
-                return None
-                
             await expand_button.click()
             
             await page.wait_for_selector(f'#{match_id} .PlayerGameDropdown', state='visible')
-            await page.wait_for_timeout(1000)  # Give extra time for content to load
+            await page.wait_for_timeout(1000)
             
             match_container = await page.query_selector(f'#{match_id}')
             if not match_container:
@@ -678,7 +682,7 @@ class TFTTimeline:
                     
                     if active_tab:
                         content = await active_tab.inner_html()
-                        match_data = await self.process_tab_content(tab_name, page, content, match_data)
+                        match_data = await self.process_tab_content(tab_name, page, active_tab, content, match_data)
                 
                 except Exception as e:
                     print(f"Error processing tab {tab_name}: {str(e)}")
@@ -690,15 +694,11 @@ class TFTTimeline:
             print(f"Error getting details for match {match_id}: {str(e)}")
             return None
 
-    async def get_player_data(self, riot_id, region="tw"):
-        """Get player data from MetaTFT using Riot ID"""
-        # Convert Riot ID to URL format (replace # with -)
-        formatted_id = riot_id.replace('#', '-')
-        url = f"{self.base_url}/{region}/{formatted_id}"
+    async def get_match_data(self, riot_id, region="tw"):
+        url = f"{self.base_url}/{region}/{riot_id.replace('#', '-')}"
         print(f"Fetching data for {riot_id}...")
         
         async with async_playwright() as p:
-            # Launch browser with increased timeout
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
@@ -707,7 +707,6 @@ class TFTTimeline:
             page = await context.new_page()
             
             try:
-                # Try loading the page with retries
                 max_retries = 3
                 retry_count = 0
                 while retry_count < max_retries:
@@ -720,33 +719,16 @@ class TFTTimeline:
                             raise e
                         await asyncio.sleep(5)
                 
-                # Wait for the Ranked tab to be visible and click it
-                try:
-                    ranked_button = await page.wait_for_selector('button:has-text("Ranked")', timeout=30000)
-                    if not ranked_button:
-                        return None
-                    await ranked_button.click()
-                except Exception as e:
-                    return None
+                ranked_button = await page.wait_for_selector('button:has-text("Ranked")', timeout=30000)
+                await ranked_button.click()
                 
-                # Wait for the matches to load
-                try:
-                    await page.wait_for_selector('.PlayerGame', timeout=30000)
-                except Exception as e:
-                    return None
+                await page.wait_for_selector('.PlayerGame', timeout=30000)
                 
-                # Get first match only
                 match_elements = await page.query_selector_all('.PlayerGame')
                 
-                if match_elements:
-                    match_id = await match_elements[0].get_attribute('id')
-                    if match_id:
-                        match_data = await self.get_match_details(page, match_id)
-                        if match_data:
-                            return [match_data]
-                
-                return None
-                
+                match_id = await match_elements[0].get_attribute('id')
+                match_data = await self.get_match_details(page, match_id)
+                return [match_data]
             except Exception as e:
                 print(f"Error fetching data: {e}")
                 return None
@@ -754,7 +736,6 @@ class TFTTimeline:
                 await browser.close()
 
     def display_players_summary(self, recent_match, clipboard_text):
-        """Display players summary data if available"""
         if 'players_summary' in recent_match:
             print("PLAYERS SUMMARY:")
             summary_data = recent_match['players_summary']
@@ -860,27 +841,15 @@ class TFTTimeline:
                     print(f"Unexpected players data type: {type(players_data)}")
                     print(f"Players data content: {players_data}")
         return clipboard_text
-
+    
     def display_personal_summary(self, recent_match, clipboard_text):
-        """Display personal summary data if available"""
-        if 'personal_summary' in recent_match:
-            print("\nPERSONAL SUMMARY:")
-            summary_data = recent_match['personal_summary']
-            if summary_data['positive']:
-                print("\nPositive:")
-                for tag in summary_data['positive']:
-                    print(f"- {tag}")
-                clipboard_text.extend(["\nPositive:"] + [f"- {tag}" for tag in summary_data['positive']])
-            if summary_data['negative']:
-                print("\nNegative:")
-                for tag in summary_data['negative']:
-                    print(f"- {tag}")
-                clipboard_text.extend(["\nNegative:"] + [f"- {tag}" for tag in summary_data['negative']])
-            if summary_data['ap']:
-                print("\nAP:")
-                for tag in summary_data['ap']:
-                    print(f"- {tag}")
-                clipboard_text.extend(["\nAP:"] + [f"- {tag}" for tag in summary_data['ap']])
+        summary_data = recent_match['personal_summary'] if 'personal_summary' in recent_match else []
+        if not summary_data:
+            return clipboard_text
+        
+        print("\nPERSONAL SUMMARY:")
+        print(f"+ {summary_data}")
+        clipboard_text.extend(["\nSummary:"] + [f"- {tag}" for tag in summary_data])
         return clipboard_text
 
     def display_stage_breakdown(self, recent_match, clipboard_text):
@@ -1120,43 +1089,29 @@ class TFTTimeline:
         print("-" * 50)
 
 def get_riot_id():
-    """Get Riot ID from .env file or user input"""
     load_dotenv()
     riot_id = os.getenv('RIOT_ID')
     region = os.getenv('REGION', 'tw')
     
     if riot_id:
-        print(f"Using Riot ID from .env: {riot_id}")
-        print(f"Using region from .env: {region}")
+        print(f"Using Riot ID, region from .env: {riot_id} {region}")
         return riot_id, region
     
-    # If not found in .env, get from user input
     riot_id = input("Enter Riot ID (format: name#tag): ").strip()
     region = input("Enter region (e.g., tw, na, euw): ").strip().lower()
     return riot_id, region
 
+def argparse_args():
+    parser = argparse.ArgumentParser(description='Fetch TFT match data')
+    parser.add_argument('--no-file', action='store_true', help='Do not write match data to file')
+    return parser.parse_args()
+
 async def main():
-    try:
-        # Parse command line arguments
-        parser = argparse.ArgumentParser(description='Fetch TFT match data')
-        parser.add_argument('--no-file', action='store_true', help='Do not write match data to file')
-        args = parser.parse_args()
-        
-        tft = TFTTimeline()
-        
-        # Get Riot ID and region
-        riot_id, region = get_riot_id()
-        
-        print(f"\nFetching data for {riot_id}...")
-        matches = await tft.get_player_data(riot_id, region)
-        
-        if matches:
-            tft.display_match_history(matches, write_file=not args.no_file)
-        else:
-            print("No matches found or error occurred")
-        
-    except Exception as e:
-        print(f"Error: {e}")
+    args = argparse_args()
+    riot_id, region = get_riot_id()
+    tft = MetaTFT()
+    matches = await tft.get_match_data(riot_id, region)
+    tft.display_match_history(matches, write_file=not args.no_file)
 
 if __name__ == "__main__":
     asyncio.run(main()) 

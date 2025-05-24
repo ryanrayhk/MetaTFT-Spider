@@ -1,4 +1,7 @@
-use Playwright or Selenium for interact
+use Playwright or Selenium for interact, not BeautifulSoup
+
+how to use requirements.txt
+pip install -r requirements.txt
 
 bs
 prefect match
