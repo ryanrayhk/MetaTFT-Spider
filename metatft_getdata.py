@@ -303,16 +303,108 @@ class MetaTFT:
                 soup = BeautifulSoup(content, 'html.parser')
                 this_round = soup.select_one("div.PlayerGameRoundListItem.selected")
                 round_data = {}
-                round_data['result'] = 'victory' if this_round.get('class') == 'PlayerGameRoundListItem victory selected' else 'defeat'
                 round_data['round'] = self.check_get_text(this_round.find('div', class_='StageDetails'))
+                # region Get round outcome
+                if this_round.get('class') == 'PlayerGameRoundListItem victory selected':
+                    round_data['outcome'] = 'victory'
+                elif this_round.get('class') == 'PlayerGameRoundListItem defeat selected':
+                    round_data['outcome'] = 'defeat'
+                else:
+                    round_data['outcome'] = 'draw'
+                # endregion
+                RoundValues = this_round.find('div', class_='RoundValues')
+                # every round has hp, but not damage & roll
+                round_data['hp'] = self.check_get_text(self.find_div_with_stage_hp_icon(RoundValues) if RoundValues else None)
+
+                RoundValue_DamageNum = RoundValues.find("div", class_=["RoundValue", "DamageNum"]) if RoundValues else None
+                if RoundValue_DamageNum:
+                    round_data['round_damage'] = self.check_get_text(RoundValue_DamageNum)
+
+                reroll_div = self.find_div_with_reroll_icon(RoundValues) if RoundValues else None
+                if reroll_div:
+                    round_data['rerolls'] = self.check_get_text(reroll_div)
+
                 round_data['opponent'] = self.check_get_text(this_round.find('span', class_='OpponentName'))
-                team_map = soup.find('div', class_='team-builder')
+
+                # in PlayerGameRoundDetail
+                # in PlayerGameRoundDetail > StageDetailsMatchup
+                # in PlayerGameRoundDetail > StageDetailsMatchup > StageDetailsMatchupBoards
+                PlayerGameRoundDetail = soup.find('div', class_='PlayerGameRoundDetail')
+                round_data['traits_opponent'] = self.round_detail_tab_get_traits(PlayerGameRoundDetail.find("div", class_=["PlayerGameTraitContainer", "PlayerGameTraitContainerOpponent"]))
+                # as items data is not collected well, skip it for now
+                round_data['traits_player'] = self.round_detail_tab_get_traits(PlayerGameRoundDetail.find("div", class_=["PlayerGameTraitContainer", "PlayerGameTraitContainerPlayer"]))
+
+                team_map = PlayerGameRoundDetail.find('div', class_='team-builder')
                 round_data['team_map'] = self.round_detail_team_map(team_map)
+                bench_div = PlayerGameRoundDetail.find('div', class_='StageDetailBenchContainer')
+                StageDetailBenchSlotUnitImageContainers = bench_div.find_all('div', class_='StageDetailBenchSlotUnitImageContainer') if bench else []
+                bench = []
+                for container in StageDetailBenchSlotUnitImageContainers:
+                    StageDetailBenchSlotUnitTier = container.find('img', class_='StageDetailBenchSlotUnitTier')
+                    tier = StageDetailBenchSlotUnitTier.get('src', '').split('/')[-1].replace('.png', '') if StageDetailBenchSlotUnitTier else '1'
+                    StageDetailBenchSlotUnitImage = container.find('img', class_='StageDetailBenchSlotUnitImage')
+                    unit_name = StageDetailBenchSlotUnitImage.get('alt', '') if StageDetailBenchSlotUnitImage else 'Unknown'
+                    bench.append(f"{unit_name} : {tier}")
+
+                StageDetailsMatchupInfo = PlayerGameRoundDetail.find('div', class_='StageDetailsMatchupInfo')
+                StageDamageChartContainer = StageDetailsMatchupInfo.find('div', class_='StageDamageChartContainer')
+                y_axis_units = StageDamageChartContainer.find('g', class_='y-axis')
+                g_ticks = y_axis_units.find_all('g', class_='tick') if y_axis_units else []
+                champion_names = []
+                for tick in g_ticks:
+                    # for sort
+                    transform = tick.get('transform', '')
+                    champion_name = tick.find('image', class_='DamageUnitimg').get('src', '').split('/')[-1].replace('tft14_', '').replace('.png', '')
+                    star = tick.find('image', class_='DamageUnitimgStars')
+                    stars = star.get('src', '').split('/')[-1].replace('.png', '') if star else '1'
+                    champion_names.append(f"{champion_name} : {stars}")
+
+                StageDamageChartContainer.find('g', class_='plot-area')
+                g_bars = StageDamageChartContainer.find_all('g', class_='bars')
+                damages = []
+                for bar in g_bars:
+                    damages.append(bar.gettext(strip=True))
+
+                # Create a mapping of champion names to their damage values
+                round_data['champion_damage'] = []
+                for champion_name, damage in zip(champion_names, damages):
+                    round_data['champion_damage'].append({
+                        'champion': champion_name,
+                        'damage': damage
+                    })
+                
+
                 match_data['round_detail'].append(round_data)
                 print(f"round_data: {round_data}")
             except Exception as e:
                 print(f"Error clicking on round: {str(e)}")
         return match_data
+    
+    def round_detail_tab_get_traits(self, soup):
+        result = []
+        PlayerGameTraits = soup.find('div', class_='PlayerGameTrait')
+        display_contents = PlayerGameTraits.find_all('div', class_='display-contents')
+        for display_content in display_contents:
+            TraitBG = display_content.find('img', class_=["TraitBG", "TraitTiny"])
+            Trait_src = TraitBG.get('src', '') if TraitBG else ''
+            Trait_color = Trait_src.split('/')[-1].replace('.png', '')
+
+            Trait = display_content.find('img', class_=["TraitIcon", "TraitTiny", "TraitIconDark"])
+            trait_name = Trait.get('alt', '')
+            result.append(f"{trait_name} : {Trait_color}")
+        return result
+
+    def find_div_with_hp_icon(self, soup):
+        def has_hp_icon(div):
+            return div.find('svg', class_='StageHPIcon') is not None
+    
+        return soup.find('div', has_hp_icon)
+    
+    def find_div_with_reroll_icon(self, soup):
+        def has_reroll_icon(div):
+            return div.find('img', class_='RerollIcon') is not None
+    
+        return soup.find('div', has_reroll_icon)
     
     # TODO: not finished, it is a draft only
     def round_detail_team_map(self, soup):
@@ -368,7 +460,6 @@ class MetaTFT:
             'paths': paths,
             'labels': labels
         }
-        print(f"personal_summary_graph_{title}: {match_data[f'personal_summary_graph_{title}']}")
         return match_data
 
     async def process_tab_content(self, tab_name, page, active_tab, content, match_data):
@@ -391,8 +482,6 @@ class MetaTFT:
             for i, item in enumerate(MuiListItems):
                 for x in newMuiListItems:
                     text2 = await x.inner_text()
-                    print(f"newMuiListItems: {text2}")
-                    print(f"handledItems: {handledItems}")
                     if text2 not in handledItems:
                         clickItem = x
                         break
@@ -647,7 +736,7 @@ class MetaTFT:
             await self.round_detail_tab_content(page, match_data)
         
         return match_data
-
+    
     async def get_match_details(self, page, match_id):
         try:
             expand_button = await page.query_selector(f'#{match_id} .PlayerGameExpandImageContainer')
@@ -1015,13 +1104,13 @@ class MetaTFT:
             
             for round_data in round_detail_data:
                 print(f"\nRound: {round_data['round']}")
-                print(f"Result: {round_data['result']}")
+                print(f"Result: {round_data['outcome']}")
                 print(f"Opponent: {round_data['opponent']}")
                 print(f"Team Map: {round_data['team_map']}")
 
                 clipboard_text.extend([
                     f"\nRound: {round_data['round']}",
-                    f"Result: {round_data['result']}",
+                    f"Result: {round_data['outcome']}",
                     f"Opponent: {round_data['opponent']}",
                     f"Team Map: {round_data['team_map']}"
                 ])

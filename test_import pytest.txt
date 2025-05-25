@@ -1,0 +1,24 @@
+**How to use this file:**
+
+1. **Save the file** as `test_metatft_getdata.py` (or any name starting with `test_` and ending with `.py`) in your project directory.
+2. **Install pytest and pytest-asyncio** if you haven't:
+    ```
+    pip install pytest pytest-asyncio
+    ```
+3. **Run the tests** from your terminal in the project directory:
+    ```
+    pytest
+    ```
+    or to run only this file:
+    ```
+    pytest test_metatft_getdata.py
+    ```
+
+**What `test_get_match_data_goto_exception` does:**
+- It creates a `MetaTFT` instance.
+- Mocks all Playwright browser/page objects.
+- Forces `page.goto` to raise an exception.
+- Calls `get_match_data`.
+- Asserts that the result is `None` (as expected when an exception occurs).
+
+You can add more tests in this file using the same pattern.
