@@ -352,7 +352,7 @@ class MetaTFT:
                 g_ticks = y_axis_units.find_all('g', class_='tick') if y_axis_units else []
                 champion_names = []
                 for tick in g_ticks:
-                    # for sort
+                    # transform is for sort
                     transform = tick.get('transform', '')
                     champion_name = tick.find('image', class_='DamageUnitimg').get('src', '').split('/')[-1].replace('tft14_', '').replace('.png', '')
                     star = tick.find('image', class_='DamageUnitimgStars')
@@ -365,7 +365,6 @@ class MetaTFT:
                 for bar in g_bars:
                     damages.append(bar.gettext(strip=True))
 
-                # Create a mapping of champion names to their damage values
                 round_data['champion_damage'] = []
                 for champion_name, damage in zip(champion_names, damages):
                     round_data['champion_damage'].append({
@@ -373,6 +372,7 @@ class MetaTFT:
                         'damage': damage
                     })
                 
+                # TODO:shop
 
                 match_data['round_detail'].append(round_data)
                 print(f"round_data: {round_data}")
@@ -410,18 +410,28 @@ class MetaTFT:
     def round_detail_team_map(self, soup):
         data = []
         for g in soup.find_all("g"):
-            defs = g.find("defs")
+            # defs = g.find("defs")
+            # pattern = defs.find("pattern", id=lambda x: x and x.startswith("mask-T")) if defs and polygon else None
+            # mask_id = pattern["id"] if pattern else ""
+            # parts = mask_id.split("_")
+            # if len(parts) >= 3:
+            # name = parts[1].split("-")[0]
+            name = g.gettext(strip=True)
+            star_image = g.find("image", class_="unit-stars-svg")
+            tier = star_image.get("alt", "")[-1] if star_image else "1"
+
+            item_images = g.find_all("image", class_="draggable-unit-item")
+            items = [item.get("alt", "") for item in item_images if item.get("alt", "")]
+
             polygon = g.find("polygon")
-            pattern = defs.find("pattern", id=lambda x: x and x.startswith("mask-T")) if defs and polygon else None
-            mask_id = pattern["id"] if pattern else ""
+            hex_id = polygon.get("id", "") if polygon else ""
+            cell_id = hex_id.split("_")[1] if "_" in hex_id else ""
 
-            parts = mask_id.split("_")
-            if len(parts) >= 3:
-                name = parts[1].split("-")[0]
-                hex_id = polygon.get("id", "") if polygon else ""
-                cell_id = hex_id.split("_")[1] if "_" in hex_id else ""
-
-                data.append({"name": name, "cell_id": cell_id})
+            data.append({
+                "name": f"{name} : {tier}", 
+                "items":items, 
+                "cell_id": cell_id
+                })
         return data
     
     def personal_summary_graph(self, soup, match_data, title):
