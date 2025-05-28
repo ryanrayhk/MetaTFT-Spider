@@ -13,6 +13,20 @@ import array_help
 import re
 
 # python '.\metatft_getdata.py' --no-file
+class TabParser:
+    def parse(self, soup, match_data):
+        raise NotImplementedError
+
+class PlayersTabParser(TabParser):
+    def parse(self, soup, match_data):
+        # implement players tab logic
+        return match_data
+
+class PersonalSummaryTabParser(TabParser):
+    def parse(self, soup, match_data):
+        # implement personal summary logic
+        return match_data
+
 class MetaTFT:
     def __init__(self):
         self.base_url = "https://www.metatft.com/player"
@@ -373,12 +387,66 @@ class MetaTFT:
                     })
                 
                 # TODO:shop
+                StageDetailShop = PlayerGameRoundDetail.find('div', class_='StageDetailShop')
+                StageLevelInfo = StageDetailShop.find('div', class_='StageLevelInfo')
+                StageLevelInfoNumbers = StageLevelInfo.find_all('div', class_='StageLevelInfoNumber')
+                shop_lv = StageLevelInfoNumbers[0].get_text(strip=True) if len(StageLevelInfoNumbers) > 0 else '0'
+                # but gold is not changed after click the down button
+                player_gold = StageLevelInfoNumbers[1].get_text(strip=True) if len(StageLevelInfoNumbers) > 1 else '0'
+
+                # here can have star on champion, website does not show it, don't know why
+                StageDetailShopUnitList = StageDetailShop.find('div', class_='StageDetailShopUnitList')
+                StageDetailShopSlots = StageDetailShopUnitList.find_all('div', class_='StageDetailShopSlot')
+                shop_units = []
+                for slot in StageDetailShopSlots:
+                    StageDetailShopSlotUnitImage = slot.find('img', class_='StageDetailShopSlotUnitImage')
+                    champion_name = StageDetailShopSlotUnitImage.get('alt', '') if StageDetailShopSlotUnitImage else 'Unknown'
+                    StageDetailShopSlotUnitBought = slot.find('img', class_='StageDetailShopSlotUnitBought')
+
+
+                StageDetailActions = PlayerGameRoundDetail.find('div', class_='StageDetailActions')
+                PlayerGameSummaryHighlightStatNumber = StageDetailActions.find_all('div', class_='PlayerGameSummaryHighlightStatNumber')
+                for stat in PlayerGameSummaryHighlightStatNumber:
+                    if not scouting_time:
+                        scouting_time = self.round_detail_tab_get_actions(stat, 'Scouting Time')
+                    if not round_apm:
+                        round_apm = self.round_detail_tab_get_actions(stat, 'Round APM')
+                    if not repositions:
+                        repositions = self.round_detail_tab_get_actions(stat, 'Repositions')
+                    if not board_changes:
+                        board_changes = self.round_detail_tab_get_actions(stat, 'Board Changes')
+
+                round_data['actions'] = {
+                    'scouting_time': scouting_time if 'scouting_time' in locals() else '0s',
+                    'round_apm': round_apm if 'round_apm' in locals() else '0',
+                    'repositions': repositions if 'repositions' in locals() else '0',
+                    'board_changes': board_changes if 'board_changes' in locals() else '0'
+                }
 
                 match_data['round_detail'].append(round_data)
                 print(f"round_data: {round_data}")
             except Exception as e:
                 print(f"Error clicking on round: {str(e)}")
         return match_data
+    
+    async def round_detail_tab_tap_down_get_shop(self, page):
+        page.query_selector('div.tab-content > div.tab-pane.active > div > div > div.PlayerGameRoundDetail > div.StageDetailBottom > div.StageDetailShopSection > div.StageDetailShop > div.ShopSelector > div.ShopSelectorButtons > div:nth-child(2)').click()
+        await page.wait_for_timeout(500)
+        content = page.query_selector('StageDetailShopContainer')
+        soup = BeautifulSoup(content, 'html.parser')
+        StageDetailShopUnitList = soup.find('div', class_='StageDetailShopUnitList')
+        StageDetailShopSlots = StageDetailShopUnitList.find_all('div', class_='StageDetailShopSlot')
+        shop_units = []
+        for slot in StageDetailShopSlots:
+            StageDetailShopSlotUnitImage = slot.find('img', class_='StageDetailShopSlotUnitImage')
+            champion_name = StageDetailShopSlotUnitImage.get('alt', '') if StageDetailShopSlotUnitImage else 'Unknown'
+            StageDetailShopSlotUnitBought = slot.find('img', class_='StageDetailShopSlotUnitBought')
+
+    def round_detail_tab_get_actions(self, soup, text):
+        if text in soup.get_text(strip=True):
+            return soup.get_text(strip=True).replace(text, '').strip()
+        return '0'
+            
     
     def round_detail_tab_get_traits(self, soup):
         result = []
