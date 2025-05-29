@@ -31,47 +31,6 @@ class MetaTFT:
     def __init__(self):
         self.base_url = "https://www.metatft.com/player"
 
-    async def process_players_tab(self, soup, match_data):
-        """Process the Players tab content"""
-        # Extract opponent rank data
-        rank_summary = soup.find('div', class_='GameRankSummary')
-        if rank_summary:
-            rank_data = {
-                'tier': None,
-                'division': None,
-                'lp': None
-            }
-            
-            # Get rank tier (e.g., PLATINUM)
-            rank_div = rank_summary.find('div', class_='PlayerRank')
-            if rank_div:
-                rank_data['tier'] = rank_div.get_text(strip=True).lower()
-            
-            # Get division (e.g., IV)
-            division_span = rank_summary.find('span', class_='PlayerRankDivision')
-            if division_span:
-                rank_data['division'] = division_span.get_text(strip=True)
-            
-            # Get LP
-            lp_div = rank_summary.find('div', class_='PlayerRankLP')
-            if lp_div:
-                rank_data['lp'] = lp_div.get_text(strip=True)
-            
-            match_data['opponent_rank'] = rank_data
-            
-        # Extract player match data
-        player_matches = soup.find_all('div', class_='PlayerGameMatch')
-        players_data = []
-        
-        print("\nPlayers in match:")
-        for player_match in player_matches:
-            player_data = self.extract_player_data(player_match)
-            players_data.append(player_data)
-            print(f"- {player_data['name']} #{player_data.get('tag', '')}")
-        
-        match_data['players'] = players_data
-        return match_data
-
     def extract_player_data(self, player_match):
         player_data = {}
         
